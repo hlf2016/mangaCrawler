@@ -44,6 +44,11 @@ func (c *Chapter) Parse(doc *goquery.Document) []string {
 
 func (c *Chapter) Download(comicPath string) error {
 	var wg sync.WaitGroup
+	// 限制并发数量
+	maxGoroutines := 20
+	// 用 struct{} 作为信号类型的原因  不占任何内存
+	guard := make(chan struct{}, maxGoroutines)
+
 	chapterPath := path.Join(comicPath, c.Title)
 	err := CheckDir(chapterPath)
 	if err != nil {
@@ -58,8 +63,12 @@ func (c *Chapter) Download(comicPath string) error {
 	fmt.Println(imgUrls, len(imgUrls))
 	for _, imgUrl := range imgUrls {
 		wg.Add(1)
+		guard <- struct{}{} // 会阻塞，直到有空闲位置
 		go func(imgUrl string) {
 			defer wg.Done()
+			// 完成一个 goroutine 那就释放一个空位置出来
+			defer func() { <-guard }()
+
 			imgName := filepath.Base(imgUrl)
 			fmt.Println(imgName)
 			err = DownloadImage(imgUrl, chapterPath, imgName)
