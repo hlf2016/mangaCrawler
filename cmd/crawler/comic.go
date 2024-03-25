@@ -1,21 +1,16 @@
 package main
 
 import (
-	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/redis/go-redis/v9"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"sync"
-	"time"
 )
 
 type Meta struct {
@@ -112,44 +107,6 @@ type Comic struct {
 	Chapters []*Chapter
 }
 
-func RequestUrl(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36")
-	client := &http.Client{
-		Transport: &http.Transport{
-			// 禁用HTTP/2支持
-			TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
-		},
-	}
-
-	// 重试 5 次
-	for i := 0; i < 5; i++ {
-		resp, err := client.Do(req)
-		if err != nil {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			log.Printf("Error sending request: %v ", err)
-			time.Sleep(time.Duration(2*i) * time.Second) // 指数退避策略
-			continue
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			log.Printf("Server returned non-200 status: %d ", resp.StatusCode)
-			time.Sleep(time.Duration(2*i) * time.Second)
-			resp.Body.Close()
-			continue
-		}
-
-		return resp, nil
-	}
-	return nil, err
-}
-
 func Resp2Doc(url string) (*goquery.Document, error) {
 	resp, err := RequestUrl(url)
 	if err != nil {
@@ -192,33 +149,6 @@ func parseComic(doc *goquery.Document) *Comic {
 	})
 	comic.Meta = meta
 	return comic
-}
-
-func DownloadImage(url string, dir string, filename string) error {
-	resp, err := RequestUrl(url)
-	if err != nil {
-		fmt.Println("Download img error", 1)
-		return err
-	}
-
-	filePath := path.Join(dir, filename)
-	out, err := os.Create(filePath)
-	if err != nil {
-		fmt.Println("Download img error", 2)
-		return err
-	}
-	defer out.Close()
-
-	if _, err = io.Copy(out, resp.Body); err != nil {
-		fmt.Println("Download img error", 3)
-		return err
-	}
-	defer func() {
-		if resp != nil {
-			resp.Body.Close()
-		}
-	}()
-	return nil
 }
 
 func CheckDir(path string) error {
@@ -292,41 +222,4 @@ func (comic *Comic) Download() error {
 	}
 	wg.Wait()
 	return nil
-}
-
-func initRedis() {
-	redisClient = redis.NewClient(&redis.Options{
-		Addr:     "localhost:6379",
-		Password: "", // no password set
-		DB:       0,  // use default DB
-	})
-	_, err := redisClient.Ping(ctx).Result()
-	if err != nil {
-		panic(err)
-	}
-}
-
-const BaseUrl = "https://www.mxs13.cc"
-
-var (
-	redisClient       *redis.Client
-	ctx               = context.Background()
-	currentComicTitle = ""
-)
-
-func main() {
-	initRedis()
-	url := BaseUrl + "/book/418"
-	doc, err := Resp2Doc(url)
-	if err != nil {
-		log.Printf("Response to doc error: %v", err)
-		return
-	}
-	comic := parseComic(doc)
-	// fmt.Println(comic)
-	err = comic.Download()
-	if err != nil {
-		log.Printf("Comic download error: %v", err)
-		return
-	}
 }

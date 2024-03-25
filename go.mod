@@ -7,6 +7,10 @@ require (
 	github.com/andybalholm/cascadia v1.3.2 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+	github.com/go-shiori/go-epub v1.2.1 // indirect
+	github.com/gofrs/uuid/v5 v5.0.0 // indirect
 	github.com/redis/go-redis/v9 v9.5.1 // indirect
+	github.com/vincent-petithory/dataurl v1.0.0 // indirect
 	golang.org/x/net v0.21.0 // indirect
 )
