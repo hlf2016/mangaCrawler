@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/redis/go-redis/v9"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -307,8 +309,12 @@ var (
 )
 
 func main() {
+	id := flag.Int("id", 499, "漫画 ID")
+	flag.Parse()
+
 	initRedis()
-	url := BaseUrl + "/book/499"
+	url := BaseUrl + "/book/" + strconv.Itoa(*id)
+	fmt.Println(*id, url)
 	doc, err := Resp2Doc(url)
 	if err != nil {
 		log.Printf("Response to doc error: %v", err)
