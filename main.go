@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/redis/go-redis/v9"
 	"io"
 	"log"
 	"net/http"
@@ -42,10 +46,10 @@ func (c *Chapter) Parse(doc *goquery.Document) []string {
 	})
 }
 
-func (c *Chapter) Download(comicPath string) error {
+func (c *Chapter) Download(comicPath string, comicTitle string) error {
 	var wg sync.WaitGroup
 	// 限制并发数量
-	maxGoroutines := 20
+	maxGoroutines := 5
 	// 用 struct{} 作为信号类型的原因  不占任何内存
 	guard := make(chan struct{}, maxGoroutines)
 
@@ -60,11 +64,19 @@ func (c *Chapter) Download(comicPath string) error {
 		return err
 	}
 	imgUrls := c.Parse(doc)
-	fmt.Println(imgUrls, len(imgUrls))
-	for _, imgUrl := range imgUrls {
+	fmt.Println(len(imgUrls))
+	for i, imgUrl := range imgUrls {
+		offset := int64(i)
+		doneImg, err := redisClient.GetBit(ctx, c.Title, offset).Result()
+		if err != nil && !errors.Is(err, redis.Nil) {
+			return err
+		}
+		if doneImg == 1 {
+			continue
+		}
 		wg.Add(1)
 		guard <- struct{}{} // 会阻塞，直到有空闲位置
-		go func(imgUrl string) {
+		go func(imgUrl string, offset int64) {
 			defer wg.Done()
 			// 完成一个 goroutine 那就释放一个空位置出来
 			defer func() { <-guard }()
@@ -74,10 +86,22 @@ func (c *Chapter) Download(comicPath string) error {
 			err = DownloadImage(imgUrl, chapterPath, imgName)
 			if err != nil {
 				log.Printf("Download chapter image url: %s  error: %v", imgUrl, err)
+				return
 			}
-		}(imgUrl)
+			// 抓取成功 做标记
+			redisClient.SetBit(ctx, c.Title, offset, 1)
+		}(imgUrl, offset)
 	}
 	wg.Wait()
+	// 推出前 判断整章是否都抓取完毕 设置标志
+	completeNum, err := redisClient.BitCount(ctx, c.Title, nil).Result()
+	if err != nil {
+		return err
+	}
+	if completeNum == int64(len(imgUrls)) {
+		// 已经抓取完毕
+		redisClient.HSet(ctx, comicTitle, c.Title, 1)
+	}
 	return nil
 }
 
@@ -95,12 +119,20 @@ func RequestUrl(url string) (*http.Response, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36")
-	client := &http.Client{}
+	client := &http.Client{
+		Transport: &http.Transport{
+			// 禁用HTTP/2支持
+			TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		},
+	}
 
-	// 重试 3 次
+	// 重试 5 次
 	for i := 0; i < 5; i++ {
 		resp, err := client.Do(req)
 		if err != nil {
+			if resp != nil {
+				resp.Body.Close()
+			}
 			log.Printf("Error sending request: %v ", err)
 			time.Sleep(time.Duration(2*i) * time.Second) // 指数退避策略
 			continue
@@ -109,6 +141,7 @@ func RequestUrl(url string) (*http.Response, error) {
 		if resp.StatusCode != http.StatusOK {
 			log.Printf("Server returned non-200 status: %d ", resp.StatusCode)
 			time.Sleep(time.Duration(2*i) * time.Second)
+			resp.Body.Close()
 			continue
 		}
 
@@ -164,20 +197,27 @@ func parseComic(doc *goquery.Document) *Comic {
 func DownloadImage(url string, dir string, filename string) error {
 	resp, err := RequestUrl(url)
 	if err != nil {
+		fmt.Println("Download img error", 1)
 		return err
 	}
-	defer resp.Body.Close()
+
 	filePath := path.Join(dir, filename)
 	out, err := os.Create(filePath)
 	if err != nil {
+		fmt.Println("Download img error", 2)
 		return err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
-	if err != nil {
+	if _, err = io.Copy(out, resp.Body); err != nil {
+		fmt.Println("Download img error", 3)
 		return err
 	}
+	defer func() {
+		if resp != nil {
+			resp.Body.Close()
+		}
+	}()
 	return nil
 }
 
@@ -221,20 +261,62 @@ func (comic *Comic) Download() error {
 	// fmt.Println(string(metaJson))
 
 	// 下载各章节信息
+	var wg sync.WaitGroup
+	maxGoroutines := 5
+	guard := make(chan struct{}, maxGoroutines)
+
 	for _, chapter := range comic.Chapters {
-		err = chapter.Download(dir)
-		if err != nil {
+		existed, err := redisClient.HGet(ctx, comic.Title, chapter.Title).Result()
+		// 返回 redis.Nil 表示 键不存在
+		if err != nil && !errors.Is(err, redis.Nil) {
 			return err
 		}
-		os.Exit(1)
+		if existed == "1" {
+			fmt.Println(chapter.Title, "已存在，跳过")
+			continue
+		}
+		wg.Add(1)
+		guard <- struct{}{}
+
+		go func(chapter *Chapter) {
+			defer wg.Done()
+			defer func() { <-guard }()
+			log.Println(chapter.Title, "开始抓取")
+			err = chapter.Download(dir, comic.Title)
+			if err != nil {
+				log.Printf("Download chapter: %s error: %v", chapter.Title, err)
+				return
+			}
+			log.Println(chapter.Title, "结束抓取")
+		}(chapter)
 	}
+	wg.Wait()
 	return nil
+}
+
+func initRedis() {
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "", // no password set
+		DB:       0,  // use default DB
+	})
+	_, err := redisClient.Ping(ctx).Result()
+	if err != nil {
+		panic(err)
+	}
 }
 
 const BaseUrl = "https://www.mxs13.cc"
 
+var (
+	redisClient       *redis.Client
+	ctx               = context.Background()
+	currentComicTitle = ""
+)
+
 func main() {
-	url := BaseUrl + "/book/620"
+	initRedis()
+	url := BaseUrl + "/book/418"
 	doc, err := Resp2Doc(url)
 	if err != nil {
 		log.Printf("Response to doc error: %v", err)
