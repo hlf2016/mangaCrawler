@@ -122,7 +122,7 @@ func Resp2Doc(url string) (*goquery.Document, error) {
 	return doc, nil
 }
 
-func parseComic(doc *goquery.Document) *Comic {
+func ParseComic(doc *goquery.Document) *Comic {
 	var meta = &Meta{}
 	var comic = &Comic{}
 

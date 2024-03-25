@@ -33,7 +33,7 @@ func main() {
 		log.Printf("Response to doc error: %v", err)
 		return
 	}
-	comic := parseComic(doc)
+	comic := ParseComic(doc)
 	// fmt.Println(comic)
 	err = comic.Download()
 	if err != nil {
