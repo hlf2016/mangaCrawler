@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"sync"
 )
 
@@ -43,6 +44,8 @@ func (c *Chapter) Parse(doc *goquery.Document) []string {
 
 func (c *Chapter) Download(comicPath string) error {
 	var wg sync.WaitGroup
+	chapterKey := strconv.Itoa(cfg.CurrentID) + c.Title
+	fmt.Println("当前章节 chapter key:", chapterKey)
 	// 限制并发数量
 	maxGoroutines := 5
 	// 用 struct{} 作为信号类型的原因  不占任何内存
@@ -59,14 +62,15 @@ func (c *Chapter) Download(comicPath string) error {
 		return err
 	}
 	imgUrls := c.Parse(doc)
-	fmt.Println(len(imgUrls))
+
 	for i, imgUrl := range imgUrls {
 		offset := int64(i)
-		doneImg, err := redisClient.GetBit(ctx, c.Title, offset).Result()
+		doneImg, err := redisClient.GetBit(ctx, chapterKey, offset).Result()
 		if err != nil && !errors.Is(err, redis.Nil) {
 			return err
 		}
 		if doneImg == 1 {
+			fmt.Println("图片已经抓取， 跳过")
 			continue
 		}
 		wg.Add(1)
@@ -84,16 +88,17 @@ func (c *Chapter) Download(comicPath string) error {
 				return
 			}
 			// 抓取成功 做标记
-			redisClient.SetBit(ctx, c.Title, offset, 1)
+			redisClient.SetBit(ctx, chapterKey, offset, 1)
 		}(imgUrl, offset)
 	}
 	wg.Wait()
 	// 推出前 判断整章是否都抓取完毕 设置标志
-	completeNum, err := redisClient.BitCount(ctx, c.Title, nil).Result()
+	completeNum, err := redisClient.BitCount(ctx, chapterKey, nil).Result()
 	if err != nil {
 		return err
 	}
 	if completeNum == int64(len(imgUrls)) {
+		fmt.Println("抓完了")
 		// 已经抓取完毕
 		redisClient.HSet(ctx, cfg.CurrentComic, c.Title, 1)
 	}
@@ -170,7 +175,7 @@ func (comic *Comic) Download() error {
 	var wg sync.WaitGroup
 	maxGoroutines := 5
 	guard := make(chan struct{}, maxGoroutines)
-
+	fmt.Println(comic.Chapters)
 	for _, chapter := range comic.Chapters {
 		existed, err := redisClient.HGet(ctx, comic.Title, chapter.Title).Result()
 		// 返回 redis.Nil 表示 键不存在
@@ -187,19 +192,19 @@ func (comic *Comic) Download() error {
 		go func(chapter *Chapter) {
 			defer wg.Done()
 			defer func() { <-guard }()
-			log.Println(chapter.Title, "开始抓取")
 			err = chapter.Download(dir)
 			if err != nil {
 				log.Printf("Download chapter: %s error: %v", chapter.Title, err)
 				return
 			}
-			log.Println(chapter.Title, "结束抓取")
 		}(chapter)
 	}
 	wg.Wait()
 	defer func() {
-		if completeNum, _ := redisClient.HLen(ctx, cfg.CurrentComic).Result(); completeNum == int64(len(comic.Chapters)) {
-			redisClient.HSet(ctx, "comics", cfg.CurrentComic, 1).Result()
+		completeNum, _ := redisClient.HLen(ctx, cfg.CurrentComic).Result()
+		fmt.Println("complete chapters:", completeNum, len(comic.Chapters))
+		if completeNum == int64(len(comic.Chapters)) {
+			redisClient.HSet(ctx, "comics", cfg.CurrentComic, cfg.CurrentID).Result()
 			// zip
 			CheckDir(cfg.ArchiveDir)
 			err := ZipSource(path.Join(cfg.DownloadDir, comic.Title), path.Join(cfg.ArchiveDir, comic.Title+".zip"))
