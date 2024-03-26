@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"sync"
 )
 
@@ -42,9 +41,13 @@ func (c *Chapter) Parse(doc *goquery.Document) []string {
 	})
 }
 
+func (c *Chapter) ChapterKey() string {
+	return path.Base(c.Url) + c.Title
+}
+
 func (c *Chapter) Download(comicPath string) error {
 	var wg sync.WaitGroup
-	chapterKey := strconv.Itoa(cfg.CurrentID) + c.Title
+	chapterKey := c.ChapterKey()
 	fmt.Println("当前章节 chapter key:", chapterKey)
 	// 限制并发数量
 	maxGoroutines := 5
@@ -100,7 +103,7 @@ func (c *Chapter) Download(comicPath string) error {
 	if completeNum == int64(len(imgUrls)) {
 		fmt.Println("抓完了")
 		// 已经抓取完毕
-		redisClient.HSet(ctx, cfg.CurrentComic, c.Title, 1)
+		redisClient.HSet(ctx, cfg.CurrentComic, chapterKey, 1)
 	}
 	return nil
 }
@@ -175,9 +178,9 @@ func (comic *Comic) Download() error {
 	var wg sync.WaitGroup
 	maxGoroutines := 5
 	guard := make(chan struct{}, maxGoroutines)
-	fmt.Println(comic.Chapters)
+
 	for _, chapter := range comic.Chapters {
-		existed, err := redisClient.HGet(ctx, comic.Title, chapter.Title).Result()
+		existed, err := redisClient.HGet(ctx, comic.Title, chapter.ChapterKey()).Result()
 		// 返回 redis.Nil 表示 键不存在
 		if err != nil && !errors.Is(err, redis.Nil) {
 			return err
